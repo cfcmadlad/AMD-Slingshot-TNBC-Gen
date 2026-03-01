@@ -1,7 +1,6 @@
 import streamlit as st
 import torch
 from diffusers import StableDiffusionPipeline
-from PIL import Image
 import os
 import glob
 
@@ -13,13 +12,13 @@ DTYPE     = torch.float16 if DEVICE == "cuda" else torch.float32
 
 # --- Page Setup ---
 st.set_page_config(page_title="TNBC Pathology Slide Generator", layout="centered")
-st.title("TNBC Pathology Slide Generator")
-st.markdown(
-    "Generate synthetic histopathology slides for **Triple-Negative Breast Cancer** "
-    "using a LoRA fine-tuned Stable Diffusion model trained on PathVQA data."
-)
 
-# --- Checkpoint Detection ---
+# --- Sidebar Navigation ---
+st.sidebar.title("Navigation")
+page = st.sidebar.radio("Go to:", ["Generator", "About the Project"])
+st.sidebar.markdown("---")
+
+# --- Checkpoint Detection & Pipeline Loader ---
 def find_checkpoint():
     if not os.path.exists(CKPT_DIR):
         return None
@@ -29,7 +28,6 @@ def find_checkpoint():
     candidates = sorted(glob.glob(os.path.join(CKPT_DIR, "lora_tnbc_step*.pt")))
     return candidates[-1] if candidates else None
 
-# --- Pipeline Loader ---
 @st.cache_resource(show_spinner="Loading model. This may take up to 60 seconds on first run.")
 def load_pipeline(ckpt_path):
     pipe = StableDiffusionPipeline.from_pretrained(
@@ -41,7 +39,6 @@ def load_pipeline(ckpt_path):
 
     if ckpt_path and os.path.exists(ckpt_path):
         state_dict = torch.load(ckpt_path, map_location=DEVICE)
-        # Strip PEFT prefix if present
         cleaned = {k.replace("base_model.model.", ""): v for k, v in state_dict.items()}
         pipe.unet.load_state_dict(cleaned, strict=False)
         status = f"LoRA checkpoint loaded: {os.path.basename(ckpt_path)}"
@@ -50,75 +47,118 @@ def load_pipeline(ckpt_path):
 
     return pipe, status
 
-ckpt_path      = find_checkpoint()
-pipe, ckpt_msg = load_pipeline(ckpt_path)
+# --- GENERATOR PAGE ---
+if page == "Generator":
+    st.title("TNBC Pathology Slide Generator")
+    st.markdown(
+        "Generate synthetic histopathology slides for **Triple-Negative Breast Cancer** "
+        "using a LoRA fine-tuned Stable Diffusion model trained on PathVQA data."
+    )
 
-# --- Sidebar ---
-st.sidebar.header("Settings")
-st.sidebar.info(ckpt_msg)
+    ckpt_path      = find_checkpoint()
+    pipe, ckpt_msg = load_pipeline(ckpt_path)
 
-num_steps      = st.sidebar.slider("Inference Steps",  20, 50,  30)
-guidance_scale = st.sidebar.slider("Guidance Scale",   5.0, 15.0, 7.5, step=0.5)
-num_images     = st.sidebar.selectbox("Images to Generate", [1, 2, 4], index=0)
+    st.sidebar.header("Inference Settings")
+    st.sidebar.info(ckpt_msg)
 
-# --- Language Presets ---
-SAMPLE_PROMPTS = {
-    "English": (
-        "Histopathology slide of triple-negative breast cancer demonstrating "
-        "high mitotic rate, geographic necrosis, and pushing border invasion."
-    ),
-    "Hindi":   "ट्रिपल-नेगेटिव स्तन कैंसर की हिस्टोपैथोलॉजी स्लाइड, उच्च माइटोटिक दर दर्शाती है।",
-    "Telugu":  "అధిక మైటోటిక్ రేట్ చూపించే ట్రిపుల్-నెగటివ్ బ్రెస్ట్ క్యాన్సర్ హిస్టోపాథాలజీ స్లైడ్.",
-    "Tamil":   "அதிக மைட்டோடிக் விகிதம் காட்டும் டிரிபிள்-நெகடிவ் மார்பக புற்றுநோய் ஸ்லைடு.",
-}
+    num_steps      = st.sidebar.slider("Inference Steps",  20, 50,  30)
+    guidance_scale = st.sidebar.slider("Guidance Scale",   5.0, 15.0, 7.5, step=0.5)
+    num_images     = st.sidebar.selectbox("Images to Generate", [1, 2, 4], index=0)
 
-# --- Prompt Input ---
-st.subheader("Clinical Prompt")
-col1, col2 = st.columns([1, 3])
-with col1:
-    language = st.selectbox("Language", list(SAMPLE_PROMPTS.keys()))
+    # --- Language Presets ---
+    SAMPLE_PROMPTS = {
+        "English": (
+            "Histopathology slide of triple-negative breast cancer demonstrating "
+            "high mitotic rate, geographic necrosis, and pushing border invasion."
+        ),
+        "Hindi":   "ट्रिपल-नेगेटिव स्तन कैंसर की हिस्टोपैथोलॉजी स्लाइड, उच्च माइटोटिक दर दर्शाती है।",
+        "Telugu":  "అధిక మైటోటిక్ రేట్ చూపించే ట్రిపుల్-నెగటివ్ బ్రెస్ట్ క్యాన్సర్ హిస్టోపాథాలజీ స్లైడ్.",
+        "Tamil":   "அதிக மைட்டோடிக் விகிதம் காட்டும் டிரிபிள்-நெகடிவ் மார்பக புற்றுநோய் ஸ்லைடு.",
+    }
 
-prompt = st.text_area(
-    "Enter a clinical description:",
-    value=SAMPLE_PROMPTS[language],
-    height=110
-)
+    # --- Prompt Input ---
+    st.subheader("Clinical Prompt")
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        language = st.selectbox("Language", list(SAMPLE_PROMPTS.keys()))
 
-neg_prompt = st.text_area(
-    "Negative prompt (optional):",
-    value="blurry, artifact, watermark, text, low quality",
-    height=60
-)
+    prompt = st.text_area(
+        "Enter a clinical description:",
+        value=SAMPLE_PROMPTS[language],
+        height=110
+    )
 
-# --- Generation ---
-if st.button("Generate Slide", use_container_width=True):
-    if not prompt.strip():
-        st.error("Please enter a prompt before generating.")
-    else:
-        with st.spinner("Generating histopathology slide..."):
-            with torch.inference_mode():
-                results = pipe(
-                    [prompt] * num_images,
-                    negative_prompt=[neg_prompt] * num_images,
-                    num_inference_steps=num_steps,
-                    guidance_scale=guidance_scale,
-                ).images
+    neg_prompt = st.text_area(
+        "Negative prompt (optional):",
+        value="blurry, artifact, watermark, text, low quality",
+        height=60
+    )
 
-        os.makedirs("outputs", exist_ok=True)
-        cols = st.columns(num_images if num_images <= 2 else 2)
+    # --- Generation ---
+    if st.button("Generate Slide", use_container_width=True):
+        if not prompt.strip():
+            st.error("Please enter a prompt before generating.")
+        else:
+            with st.spinner("Generating histopathology slide..."):
+                with torch.inference_mode():
+                    results = pipe(
+                        [prompt] * num_images,
+                        negative_prompt=[neg_prompt] * num_images,
+                        num_inference_steps=num_steps,
+                        guidance_scale=guidance_scale,
+                    ).images
 
-        for i, img in enumerate(results):
-            save_path = f"outputs/generated_{i:02d}.png"
-            img.save(save_path)
-            with cols[i % len(cols)]:
-                st.image(img, caption=f"Generated Slide {i + 1}", use_column_width=True)
+            os.makedirs("outputs", exist_ok=True)
+            cols = st.columns(num_images if num_images <= 2 else 2)
 
-        st.success(f"{num_images} image(s) saved to outputs/")
+            for i, img in enumerate(results):
+                save_path = f"outputs/generated_{i:02d}.png"
+                img.save(save_path)
+                with cols[i % len(cols)]:
+                    # Fixed deprecation warning here
+                    st.image(img, caption=f"Generated Slide {i + 1}", use_container_width=True)
 
-# --- Footer ---
-st.markdown("---")
-st.caption(
-    "Model: Stable Diffusion v1.5 + TNBC LoRA  |  "
-    "Dataset: PathVQA  |  "
-    "For research use only."
-)
+            st.success(f"{num_images} image(s) saved to outputs/")
+
+    # --- Footer ---
+    st.markdown("---")
+    st.caption(
+        "Model: Stable Diffusion v1.5 + TNBC LoRA  |  "
+        "Dataset: PathVQA  |  "
+        "For research use only."
+    )
+
+# --- ABOUT PAGE ---
+elif page == "About the Project":
+    st.title("AMD SLINGSHOT")
+    st.subheader("TNBC Histopathology Generator")
+    
+    st.markdown("---")
+    
+    st.markdown("### Overview")
+    st.markdown("""
+    Triple-negative breast cancer (TNBC) is an aggressive subtype that accounts for 15–20% of all breast cancer diagnoses. It lacks estrogen receptor (ER), progesterone receptor (PR), and HER2 expression, making it harder to classify under standard pathology protocols and severely underrepresented in annotated imaging datasets.
+    
+    **AMD SLINGSHOT** addresses this gap by fine-tuning Stable Diffusion v1.5 with Low-Rank Adaptation (LoRA) on curated TNBC-relevant pathology image-caption pairs. 
+    """)
+    
+    st.markdown("### Architecture & Model Details")
+    st.markdown("""
+    * **Base model:** `runwayml/stable-diffusion-v1-5`
+    * **Fine-tuning method:** LoRA via HuggingFace PEFT
+    * **Dataset:** Fine-tuned on 1,079 TNBC-relevant samples from the PathVQA dataset.
+    """)
+    
+    st.markdown("---")
+    
+    st.markdown("### Meet the Team")
+    st.markdown("**Team Name:** Markov Chained")
+    
+    # Fixed markdown table formatting here
+    st.markdown("""
+    | Role | Name |
+    | :--- | :--- |
+    | **Group Leader** | Aditya Rayaprolu |
+    | **Member** | Shashank Sriram  |
+    | **Member** | Abdul Ahad Bepar |
+    """)
